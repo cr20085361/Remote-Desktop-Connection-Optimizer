@@ -127,7 +127,7 @@ def format_size(num: int) -> str:
     return f"{mb:.1f} MB"
 
 
-def fetch_latest(*, timeout: float = 8) -> ReleaseInfo | None:
+def fetch_latest(*, timeout: float = 20) -> ReleaseInfo | None:
     import requests
 
     if not is_allowed_manifest_url(LATEST_JSON_URL):
