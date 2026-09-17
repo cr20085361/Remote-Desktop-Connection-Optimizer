@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "baseline": {
+    "version": "v1.0.0",
+    "recorded_at": "2026-09-17T23:15:09+08:00",
+    "version_source": null
+  },
+  "current_version": "v1.5.0",
+  "completed_iterations": 6,
+  "history": [
+    {
+      "id": "c8877cf0-f7bc-4cb8-830f-e8587e0eb47d",
+      "from_version": null,
+      "to_version": "v1.0.0",
+      "level": "initial",
+      "summary": "首版远程桌面连接优化器：Tailscale/Tun/RDP 实时诊断、本地规则 R01-R11、可确认修复 F01-F09、PySide6 仪表盘与 DeepSeek/Qwen 接口",
+      "verification": "python -m unittest tests.test_rules tests.test_v2rayn_patch -v; python main.py --cli diagnose",
+      "recorded_at": "2026-09-17T23:15:09+08:00"
+    },
+    {
+      "id": "cf986daf-3c14-43be-b7d0-91159dabbf07",
+      "from_version": "v1.0.0",
+      "to_version": "v1.1.0",
+      "level": "minor",
+      "summary": "界面改为白话体检报告：评分与一句话结论、问题卡片可确认修复、术语收进技术细节",
+      "verification": "python -m unittest discover tests -v",
+      "recorded_at": "2026-09-17T23:41:51+08:00"
+    },
+    {
+      "id": "bbf77200-c73b-4ed6-9ba1-3eb080b1eafe",
+      "from_version": "v1.1.0",
+      "to_version": "v1.2.0",
+      "level": "minor",
+      "summary": "检测改为并行两阶段并显示步骤进度，按 DeepSeek 官网预填 flash/pro 模型接入",
+      "verification": "python -m unittest discover tests -v",
+      "recorded_at": "2026-09-18T00:03:41+08:00"
+    },
+    {
+      "id": "8ad2cf67-fe67-4bc7-943d-39832b36a6ad",
+      "from_version": "v1.2.0",
+      "to_version": "v1.3.0",
+      "level": "minor",
+      "summary": "技术细节改为总览加分段，右侧 DeepSeek 流式对话，并加入窗口图标与启动画面",
+      "verification": "python -m unittest discover tests -v",
+      "recorded_at": "2026-09-18T00:26:39+08:00"
+    },
+    {
+      "id": "186d23c1-5bf5-4d0d-894a-f3e862d04c70",
+      "from_version": "v1.3.0",
+      "to_version": "v1.4.0",
+      "level": "minor",
+      "summary": "技术细节改为四个子标签，AI 改为全局右侧抽屉，工作台增加问 AI，对话支持 Markdown 完整滚动",
+      "verification": "python -m unittest discover tests -v",
+      "recorded_at": "2026-09-18T00:50:15+08:00"
+    },
+    {
+      "id": "3e06b2b4-3b05-4ca3-9fa4-7f8dcebc07f1",
+      "from_version": "v1.4.0",
+      "to_version": "v1.5.0",
+      "level": "minor",
+      "summary": "离线安装包与 GitHub 确认后更新；窗口标题与安装名称带完整版本号",
+      "verification": "python -m unittest discover tests -v",
+      "recorded_at": "2026-09-18T01:01:03+08:00"
+    }
+  ]
+}
