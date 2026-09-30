@@ -7,15 +7,52 @@ if (-not $Version) { throw "VERSION file is empty" }
 
 Write-Host "Building $Version"
 
-python -m pip install -q -r (Join-Path $Root "requirements.txt") pyinstaller
+# Build in a clean virtualenv with a sanitized PATH.
+# PyInstaller collects DLLs from PATH and packages from global site-packages. A foreign icuuc.dll
+# (e.g. from poppler) shadows the Windows one and breaks the frozen app with
+# "DLL load failed while importing QtCore"; it also drags in scipy and other unrelated packages.
+$Venv = Join-Path $Root ".venv-build"
+$VenvPy = Join-Path $Venv "Scripts\python.exe"
+if (-not (Test-Path $VenvPy)) {
+    python -m venv $Venv
+    if ($LASTEXITCODE -ne 0) { throw "venv creation failed" }
+}
+& $VenvPy -m pip install -q --upgrade pip
+& $VenvPy -m pip install -q -r (Join-Path $Root "requirements.txt") pyinstaller
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 $Dist = Join-Path $Root "dist"
 $InstallerDir = Join-Path $Dist "installer"
 New-Item -ItemType Directory -Force -Path $Dist, $InstallerDir | Out-Null
 
-python -m PyInstaller --noconfirm --clean (Join-Path $Root "packaging\rdp_optimizer.spec")
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
+$OldPath = $env:PATH
+$env:PATH = "$(Join-Path $Venv 'Scripts');$env:SystemRoot\System32;$env:SystemRoot"
+try {
+    & $VenvPy -m PyInstaller --noconfirm --clean (Join-Path $Root "packaging\rdp_optimizer.spec")
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
+} finally {
+    $env:PATH = $OldPath
+}
+
+# Self-test the frozen app: it must really load Qt and all app modules, otherwise no installer is produced.
+# RunAsInvoker avoids the UAC prompt from the requireAdministrator manifest; 90s limit so an
+# unhandled-exception dialog cannot hang the build.
+$Exe = Join-Path $Dist "RdpOptimizer\RdpOptimizer.exe"
+$SelfOut = Join-Path $Dist "selftest.txt"
+Remove-Item $SelfOut -ErrorAction SilentlyContinue
+$env:__COMPAT_LAYER = "RunAsInvoker"
+try {
+    $proc = Start-Process -FilePath $Exe -ArgumentList "--selftest", "`"$SelfOut`"" -PassThru -WindowStyle Hidden
+    if (-not $proc.WaitForExit(90000)) {
+        $proc | Stop-Process -Force
+        throw "Frozen self-test timed out (likely an unhandled-exception dialog)"
+    }
+} finally {
+    Remove-Item Env:\__COMPAT_LAYER -ErrorAction SilentlyContinue
+}
+$SelfMsg = if (Test-Path $SelfOut) { (Get-Content $SelfOut -Raw).Trim() } else { "(no output, exit code $($proc.ExitCode))" }
+if ($proc.ExitCode -ne 0 -or $SelfMsg -notlike "SELFTEST OK*") { throw "Frozen self-test failed: $SelfMsg" }
+Write-Host $SelfMsg
 
 $Iss = Join-Path $Root "packaging\rdp_optimizer.iss"
 $Utf8Bom = New-Object System.Text.UTF8Encoding $true

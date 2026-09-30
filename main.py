@@ -22,14 +22,38 @@ from core.config import APP_DISPLAY, APP_NAME, ensure_app_dirs
 from core.runner import is_admin
 
 
+def _selftest(out_path: str) -> int:
+    """打包后自检：能否加载 Qt 与全部业务模块。结果写文件（窗口版 exe 没有控制台）。"""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtCore import qVersion
+        from PySide6.QtWidgets import QApplication
+
+        import core.collector, fixes.catalog, keyring, peer.server, pyqtgraph, requests  # noqa: E401,F401
+        import ui.main_window, ui.theme  # noqa: E401,F401
+
+        QApplication.instance() or QApplication([])
+        message, code = f"SELFTEST OK Qt {qVersion()}", 0
+    except Exception as exc:  # noqa: BLE001
+        message, code = f"SELFTEST FAIL {type(exc).__name__}: {exc}", 2
+    if out_path:
+        Path(out_path).write_text(message, encoding="utf-8")
+    return code
+
+
 def _cli(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog=APP_NAME)
+    parser.add_argument("--selftest", metavar="OUTFILE", help="加载全部模块并把结果写入文件后退出")
     parser.add_argument("--cli", choices=["diagnose", "collect", "fixes"], help="命令行模式")
     parser.add_argument("--json", action="store_true", help="JSON 输出")
     parser.add_argument("--ping-count", type=int, default=2)
     parser.add_argument("--no-ping", action="store_true")
     parser.add_argument("--pmtu", action="store_true")
     args = parser.parse_args(argv)
+    if args.selftest:
+        return _selftest(args.selftest)
     if not args.cli:
         return _gui()
     ensure_app_dirs()

@@ -1,6 +1,6 @@
 ; 远程桌面连接优化器 — Inno Setup
 #ifndef MyAppVersion
-#define MyAppVersion "1.6.0"
+#define MyAppVersion "1.6.1"
 #endif
 #define MyAppName "远程桌面连接优化器"
 #define MyAppExeName "RdpOptimizer.exe"

@@ -2,7 +2,7 @@
 
 Windows 桌面工具：实时看清 Tailscale 是否被 v2rayN Tun 劫持、节点是直连还是走海外 DERP，并给出可确认执行、可回滚的修复动作。
 
-当前版本：`1.6.0`
+当前版本：`1.6.1`
 
 开源仓库：<https://github.com/cr20085361/Remote-Desktop-Connection-Optimizer>
 
@@ -59,6 +59,7 @@ timeline
   v1.4.0 : "全局助理抽屉与子标签"
   v1.5.0 : "离线安装包与确认后更新"
   v1.6.0 : "修好转绿、精确撤销与 RDP 实时质量"
+  v1.6.1 : "修复安装包无法启动，构建改为干净环境并自检"
 ```
 
 ## 离线安装包
@@ -74,7 +75,7 @@ timeline
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
 ```
 
-产出在 `dist\RdpOptimizer\`（便携目录）和 `dist\installer\RdpOptimizer-Setup-<版本>.exe`（需已安装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)）。
+脚本会在 `.venv-build` 干净虚拟环境里打包，并在出安装包前自动跑一次冻结程序自检（`RdpOptimizer.exe --selftest`）。产出在 `dist\RdpOptimizer\`（便携目录）和 `dist\installer\RdpOptimizer-Setup-<版本>.exe`（需已安装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)）。
 
 安装目录固定为 `C:\Program Files\远程桌面连接优化器`（不含版本号，便于覆盖升级）。旧版带版本号的快捷方式会在新安装时清掉。
 
@@ -83,7 +84,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
 补发 GitHub Release（已登录 `gh` 时）：
 
 ```powershell
-gh release create v1.6.0 dist\installer\RdpOptimizer-Setup-1.6.0.exe dist\latest.json --title "远程桌面连接优化器 1.6.0" --notes "见 Release 说明。"
+gh release create v1.6.1 dist\installer\RdpOptimizer-Setup-1.6.1.exe dist\latest.json --title "远程桌面连接优化器 1.6.1" --notes "见 Release 说明。"
 ```
 
 ## 它解决什么
