@@ -2,7 +2,7 @@
 
 Windows 桌面工具：实时看清 Tailscale 是否被 v2rayN Tun 劫持、节点是直连还是走海外 DERP，并给出可确认执行、可回滚的修复动作。
 
-当前版本：`1.6.1`
+当前版本：`1.6.2`
 
 开源仓库：<https://github.com/cr20085361/Remote-Desktop-Connection-Optimizer>
 
@@ -60,6 +60,7 @@ timeline
   v1.5.0 : "离线安装包与确认后更新"
   v1.6.0 : "修好转绿、精确撤销与 RDP 实时质量"
   v1.6.1 : "修复安装包无法启动，构建改为干净环境并自检"
+  v1.6.2 : "覆盖安装先清空旧运行库，并加安装演练门禁"
 ```
 
 ## 离线安装包
@@ -77,14 +78,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
 
 脚本会在 `.venv-build` 干净虚拟环境里打包，并在出安装包前自动跑一次冻结程序自检（`RdpOptimizer.exe --selftest`）。产出在 `dist\RdpOptimizer\`（便携目录）和 `dist\installer\RdpOptimizer-Setup-<版本>.exe`（需已安装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)）。
 
-安装目录固定为 `C:\Program Files\远程桌面连接优化器`（不含版本号，便于覆盖升级）。旧版带版本号的快捷方式会在新安装时清掉。
+每次安装会先清空安装目录下的 `_internal`（旧版遗留的运行库会导致 Qt 加载失败），构建脚本会自动演练一次「旧版遗留文件 → 覆盖安装 → 启动」。安装目录固定为 `C:\Program Files\远程桌面连接优化器`（不含版本号，便于覆盖升级）。旧版带版本号的快捷方式会在新安装时清掉。
 
 程序启动约 2 秒后检查更新（可在设置关掉）。发现新版本时顶部出现横幅，点「下载并安装」才会拉取 Setup 并校验哈希。设置页也可手动「检查更新」。
 
 补发 GitHub Release（已登录 `gh` 时）：
 
 ```powershell
-gh release create v1.6.1 dist\installer\RdpOptimizer-Setup-1.6.1.exe dist\latest.json --title "远程桌面连接优化器 1.6.1" --notes "见 Release 说明。"
+gh release create v1.6.2 dist\installer\RdpOptimizer-Setup-1.6.2.exe dist\latest.json --title "远程桌面连接优化器 1.6.2" --notes "见 Release 说明。"
 ```
 
 ## 它解决什么

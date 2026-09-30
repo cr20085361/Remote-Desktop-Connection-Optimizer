@@ -5,8 +5,8 @@
     "recorded_at": "2026-09-17T23:15:09+08:00",
     "version_source": null
   },
-  "current_version": "v1.6.1",
-  "completed_iterations": 8,
+  "current_version": "v1.6.2",
+  "completed_iterations": 9,
   "history": [
     {
       "id": "c8877cf0-f7bc-4cb8-830f-e8587e0eb47d",
@@ -79,6 +79,15 @@
       "summary": "修复 1.6.0 安装包启动报 DLL load failed while importing QtCore：构建改用干净虚拟环境与清理后的 PATH，打包时排除被 PATH 混入的 ICU DLL 与无关大包，并新增构建后冻结程序自检",
       "verification": "python -m unittest discover tests -v; scripts/build-release.ps1（含冻结程序 --selftest）",
       "recorded_at": "2026-09-30T21:22:18+08:00"
+    },
+    {
+      "id": "120da78f-6b62-429a-b587-28b1979f97c7",
+      "from_version": "v1.6.1",
+      "to_version": "v1.6.2",
+      "level": "patch",
+      "summary": "修复覆盖安装后仍报 DLL load failed：安装目录固定，Inno 不删旧版遗留文件，1.6.0 遗留的 ICU 仍盖住系统库。安装前先清空 _internal，卸载时一并清除，并新增构建门禁 scripts/test-installer.ps1 演练旧版遗留文件覆盖安装与启动",
+      "verification": "scripts/build-release.ps1（含冻结自检与安装演练）；本机复现遗留文件报错并验证修复",
+      "recorded_at": "2026-09-30T21:38:28+08:00"
     }
   ]
 }

@@ -73,6 +73,8 @@ $Setup = Join-Path $InstallerDir "RdpOptimizer-Setup-$Version.exe"
 if ($Iscc) {
     & $Iscc "/DMyAppVersion=$Version" $Iss
     if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+    # Gate: upgrade-over-stale-install rehearsal + launch of the installed app
+    & (Join-Path $PSScriptRoot "test-installer.ps1") -Version $Version
 } else {
     Write-Warning "Inno Setup 6 not found. Portable folder is dist\RdpOptimizer. Install Inno Setup to build RdpOptimizer-Setup-$Version.exe"
 }
