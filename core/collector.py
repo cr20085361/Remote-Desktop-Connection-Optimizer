@@ -19,6 +19,7 @@ from core.models import (
 from core.runner import is_admin
 from probes import link_probe, proxy_probe, rdp_probe, route_probe, tailscale_probe
 from rules.engine import evaluate
+from rules.plain import is_relaying
 
 
 TOTAL_STEPS = 8
@@ -65,6 +66,19 @@ def _apply_proxy_route(proxy: ProxyState, route: RouteState) -> None:
         pass
 
 
+def annotate_sessions(snapshot: Snapshot) -> None:
+    """给 RDP 会话补上对端主机名与当前路径（直连 / 中转）。"""
+    by_ip = {p.ip: p for p in snapshot.peers if p.ip}
+    for session in snapshot.rdp.sessions:
+        peer = by_ip.get(str(session.get("peer_ip") or ""))
+        if not peer:
+            continue
+        session["peer_name"] = peer.hostname
+        session["peer_rtt_ms"] = peer.ping_rtt_ms
+        if peer.ping_rtt_ms is not None or peer.relay or peer.cur_addr:
+            session["peer_path"] = "relay" if is_relaying(peer) else "direct"
+
+
 def _assemble(
     *,
     self_ip: str,
@@ -93,6 +107,7 @@ def _assemble(
         links=links,
         errors=list(errors),
     )
+    annotate_sessions(snapshot)
     snapshot.findings = evaluate(snapshot)
     return snapshot
 

@@ -78,6 +78,15 @@ TUN_IFACE_HINTS = ("singbox_tun", "sing-tun", "wintun", "meta", "tun")
 PROXY_PROC_HINTS = ("v2rayn", "sing-box", "singbox", "xray", "v2ray")
 TAILSCALE_PROCS = ("tailscaled.exe", "tailscale.exe", "tailscale-ipn.exe")
 
+# 抖动/丢包告警阈值。样本只有 4~5 个，丢 1 个包（20~25%）属于偶发，不算"不稳"。
+JITTER_ALERT_MS = 30
+LOSS_ALERT_PCT = 25
+
+# RDP 自身统计（RemoteFX Network 计数器）的告警阈值
+RDP_RTT_ALERT_MS = 150
+RDP_LOSS_ALERT_PCT = 2
+RDP_RETRANS_ALERT_PCT = 5
+
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 

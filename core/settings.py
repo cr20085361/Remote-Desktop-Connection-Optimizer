@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +101,36 @@ def set_api_key(value: str) -> None:
             pass
 
 
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-]{12,64}$")
+
+
+def is_valid_peer_token(value: str) -> bool:
+    return bool(_TOKEN_RE.match(value or ""))
+
+
+def generate_peer_token() -> str:
+    return secrets.token_urlsafe(18)
+
+
+def _token_fallback_path() -> Path:
+    return Path(SETTINGS_PATH).with_name("peer_token.txt")
+
+
+def set_peer_token(value: str) -> None:
+    """保存共享令牌。两台机器填同一个值，快照端点才能互相读取。"""
+    value = (value or "").strip()
+    if not is_valid_peer_token(value):
+        raise ValueError("令牌需为 12–64 位字母、数字、下划线或连字符")
+    try:
+        import keyring
+
+        keyring.set_password(KEYRING_SERVICE, "peer_token", value)
+        _token_fallback_path().unlink(missing_ok=True)
+    except Exception:
+        ensure_app_dirs()
+        _token_fallback_path().write_text(value, encoding="utf-8")
+
+
 def peer_token() -> str:
     try:
         import keyring
@@ -107,15 +139,13 @@ def peer_token() -> str:
         if token:
             return token
     except Exception:
-        token = None
-    import secrets
-
-    token = secrets.token_urlsafe(18)
+        pass
     try:
-        import keyring
-
-        keyring.set_password(KEYRING_SERVICE, "peer_token", token)
-    except Exception:
-        path = Path(SETTINGS_PATH).with_name("peer_token.txt")
-        path.write_text(token, encoding="utf-8")
+        saved = _token_fallback_path().read_text(encoding="utf-8").strip()
+        if saved:
+            return saved
+    except OSError:
+        pass
+    token = generate_peer_token()
+    set_peer_token(token)
     return token

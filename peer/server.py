@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -51,7 +52,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         token = (parse_qs(parsed.query).get("token") or [""])[0]
-        if token != peer_token():
+        if not hmac.compare_digest(token.encode(), peer_token().encode()):
             self._unauthorized()
             return
         if parsed.path in ("/health", "/"):

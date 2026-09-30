@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from core.config import SEVERITY_ORDER
+from core.config import JITTER_ALERT_MS, LOSS_ALERT_PCT, SEVERITY_ORDER
 from core.models import Finding, PeerState, Snapshot
 
 SEVERITY_PENALTY = {"critical": 25, "high": 12, "medium": 6, "low": 2, "info": 0}
@@ -203,6 +203,40 @@ RULE_COPY: dict[str, RuleCopy] = {
         next_step="生成一份「弱网友好」的连接文件，用它来连，而不是直接打开系统自带的远程桌面。",
         expected_gain="同样的线路下，画面会更跟手。",
     ),
+    "R12": RuleCopy(
+        plain_title="远程组网没有连上",
+        meaning="这台电脑上的 Tailscale 没有运行、没登录，或被手动断开了，所以读不到组网状态。",
+        impact="其他电脑找不到这台机器，远程桌面连不上；下面其他检测结果也不可信。",
+        next_step="打开 Tailscale，登录并点「Connect」；确认托盘图标是已连接状态后再点「重新检测」。",
+        expected_gain="组网恢复后才能继续判断卡顿原因。",
+        auto_fix=False,
+    ),
+    "R13": RuleCopy(
+        plain_title="这台电脑正把全部上网流量交给「出口节点」",
+        meaning="Tailscale 设置了出口节点，本机所有流量（包括到其他电脑的直连探测）都会先绕到那台机器。",
+        impact="远程桌面延迟被放大，还可能被迫走中转。",
+        next_step="在 Tailscale 里把「Exit node」选成「None」；确实需要出口节点时，请确认它离你足够近。",
+        expected_gain="{gain}",
+        auto_fix=False,
+    ),
+    "R14": RuleCopy(
+        plain_title="远程桌面只走了较慢的 TCP 通道",
+        meaning=(
+            "远程桌面本来可以同时用 TCP 和 UDP，UDP 更抗卡顿。"
+            "现在的会话只用上了 TCP：{tcp_names}。最常见原因是被连的那台电脑（或路由器）没放行 UDP 3389。"
+        ),
+        impact="线路稍有丢包，画面就会一顿一顿，比用 UDP 明显更卡。",
+        next_step="如果卡的是别人连你这台，点「修复这个」放行；如果是你连别人，请在对方电脑上放行 UDP 3389，然后重新连接。",
+        expected_gain="用上 UDP 后，同样线路下画面和鼠标会更跟手。",
+    ),
+    "R15": RuleCopy(
+        plain_title="此刻的远程桌面会话很卡（系统自己测到的）",
+        meaning="这不是推测：远程桌面自带的实时统计显示这条会话延迟高或丢包多——{session_bits}",
+        impact="拖动窗口、打字都会有明显延迟或花屏。",
+        next_step="先处理上面的绕路 / 丢包问题；仍然如此，换网线或换个时段再试。",
+        expected_gain="{gain}",
+        auto_fix=False,
+    ),
 }
 
 FIX_COPY: dict[str, FixCopy] = {
@@ -254,6 +288,12 @@ FIX_COPY: dict[str, FixCopy] = {
         post_action="以后请双击生成的文件来连远程桌面，不要直接打开系统自带的远程桌面。",
         risk="只新建文件，不改系统。不想用了删掉即可。",
     ),
+    "F10": FixCopy(
+        name="放行远程桌面的 UDP 通道",
+        what_changes="新增一条 Windows 防火墙入站规则：只允许 Tailscale 网段（100.64.0.0/10）访问本机 UDP 3389。",
+        post_action="请断开远程桌面后重新连接一次，新连接才会用上 UDP。",
+        risk="只放行 Tailscale 内部地址，不对外网开放。可撤销（删除这条规则）。",
+    ),
     "F09": FixCopy(
         name="固定组网端口，方便路由器打洞",
         what_changes="把 Tailscale 的端口固定为 41641，方便路由器做端口映射。",
@@ -279,8 +319,12 @@ def _peer_display(peer: PeerState) -> str:
 
 
 def is_relaying(peer: PeerState) -> bool:
+    """是否经 DERP 中转。ping 成功时以实测路径为准（status 里的 relay 在空闲时不可靠）。"""
     via = (peer.ping_via or "").lower()
-    return bool(peer.relay) or via.startswith("derp") or "derp(" in via
+    derp_via = via.startswith("derp") or "derp(" in via
+    if peer.ping_rtt_ms is not None and via:
+        return derp_via
+    return bool(peer.relay) or derp_via
 
 
 def relay_peers(snapshot: Snapshot) -> list[PeerState]:
@@ -323,13 +367,27 @@ def _ctx(snapshot: Snapshot, finding: Finding) -> dict[str, str]:
             slow.append(f"{_peer_display(peer)}（{peer.ping_rtt_ms:.0f} 毫秒）")
     jitter_bits = []
     for peer in snapshot.online_peers():
-        if peer.ping_jitter_ms is not None and peer.ping_jitter_ms > 30:
+        if peer.ping_jitter_ms is not None and peer.ping_jitter_ms > JITTER_ALERT_MS:
             jitter_bits.append(f"{_peer_display(peer)} 延迟忽高忽低")
-        if peer.ping_loss_pct is not None and peer.ping_loss_pct > 1:
+        if peer.ping_loss_pct is not None and peer.ping_loss_pct > LOSS_ALERT_PCT:
             jitter_bits.append(f"{_peer_display(peer)} 丢了 {peer.ping_loss_pct:.0f}% 的包")
     if not jitter_bits:
         jitter_bits.append("探测到延迟波动或丢包偏高。")
+    tcp_names = "、".join(
+        str(s.get("peer_name") or s.get("peer_ip") or "?")
+        for s in snapshot.rdp.sessions
+        if s.get("transport") == "tcp"
+    )
+    session_bits = "；".join(
+        f"{s.get('peer_name') or s.get('peer_ip')}："
+        f"延迟 {max(float(s.get('tcp_rtt_ms') or 0), float(s.get('udp_rtt_ms') or 0)):.0f} 毫秒、"
+        f"丢包 {float(s.get('loss_pct') or 0):.1f}%"
+        for s in snapshot.rdp.sessions
+        if s.get("tcp_rtt_ms") or s.get("udp_rtt_ms") or s.get("loss_pct")
+    ) or "数据不完整。"
     return {
+        "tcp_names": tcp_names or "有的会话",
+        "session_bits": session_bits,
         "exit_ip": snapshot.netcheck.global_v4 or "未知",
         "derp_place": derp_place,
         "derp_ms": f"{derp_ms:.0f}" if derp_ms is not None else "很高",
@@ -357,15 +415,32 @@ def score_band(score: int) -> str:
     return "严重"
 
 
+# 同一根因引起的现象只按"最重的一条 + 少量加成"扣分，避免一个问题重复扣到底。
+ROOT_CAUSE = {
+    "R01": "detour", "R02": "detour", "R03": "detour", "R04": "detour", "R05": "detour",
+    "R12": "ts_down",
+}
+SECONDARY_PENALTY_RATIO = 0.3
+
+
 def health_score(snapshot: Snapshot) -> tuple[int, str]:
-    score = 100
+    groups: dict[str, list[int]] = {}
     for finding in snapshot.findings:
-        score -= SEVERITY_PENALTY.get(finding.severity, 0)
+        penalty = SEVERITY_PENALTY.get(finding.severity, 0)
+        key = ROOT_CAUSE.get(finding.id, finding.id)
+        groups.setdefault(key, []).append(penalty)
+    deduction = 0.0
+    for penalties in groups.values():
+        penalties.sort(reverse=True)
+        deduction += penalties[0] + SECONDARY_PENALTY_RATIO * sum(penalties[1:])
+    score = 100 - int(round(deduction))
     if any(
         is_relaying(p) and p.ping_rtt_ms is not None and p.ping_rtt_ms > 300
         for p in snapshot.online_peers()
     ):
         score = min(score, 40)
+    if any(f.id == "R12" for f in snapshot.findings):
+        score = min(score, 40)  # 组网都没连上，别显示"良好"
     score = max(0, min(100, score))
     return score, score_band(score)
 
@@ -398,9 +473,31 @@ def issue_cards(snapshot: Snapshot) -> list[IssueCard]:
     return cards
 
 
+def data_gaps(snapshot: Snapshot) -> list[str]:
+    """没测到的关键数据。有缺口时不能说"一切正常"。"""
+    gaps: list[str] = []
+    if snapshot.route.error:
+        gaps.append("网卡与路由")
+    if snapshot.rdp.error:
+        gaps.append("远程桌面设置")
+    if snapshot.netcheck.raw_error and not snapshot.netcheck.global_v4:
+        gaps.append("对外地址与中转站")
+    if any(e.startswith("proxy:") for e in snapshot.errors):
+        gaps.append("翻墙软件状态")
+    if snapshot.prefs.raw_error:
+        gaps.append("组网设置")
+    return gaps
+
+
 def verdict(snapshot: Snapshot) -> str:
     cards = issue_cards(snapshot)
     if not cards:
+        gaps = data_gaps(snapshot)
+        if gaps:
+            return (
+                "没有发现问题，但有几项没能检测到（" + "、".join(gaps) + "），"
+                "结论不完整。可以点「重新检测」再试一次。"
+            )
         online = len(snapshot.online_peers())
         if online:
             return f"远程桌面通路看起来正常。当前有 {online} 台电脑在线，可以按平时的方式去连。"
@@ -437,6 +534,9 @@ def summary_line(snapshot: Snapshot) -> str:
     cards = issue_cards(snapshot)
     urgent = [c for c in cards if c.severity in {"critical", "high"}]
     if not cards:
+        gaps = data_gaps(snapshot)
+        if gaps:
+            return f"有 {len(gaps)} 项数据没测到，暂时不能确定一切正常。"
         return "这次没有发现需要处理的问题。"
     return f"共发现 {len(cards)} 项，其中 {len(urgent)} 项需要马上处理。"
 
@@ -467,6 +567,34 @@ def snapshot_compare(before: Snapshot, after: Snapshot) -> list[tuple[str, str, 
             return f"{path} · {rtt}"
 
         rows.append((name, _peer_line(b), _peer_line(a)))
+    return rows
+
+
+SESSION_HEADERS = ["对方", "方向", "传输通道", "当前路径", "延迟", "丢包", "已连"]
+_TRANSPORT_ZH = {"udp": "UDP（快）", "tcp": "仅 TCP（较慢）", "unknown": "未知"}
+_PATH_ZH = {"direct": "直连", "relay": "经中转"}
+
+
+def session_rows(snapshot: Snapshot) -> list[tuple[str, ...]]:
+    """活动远程桌面会话，整理成表格行（白话）。"""
+    rows: list[tuple[str, ...]] = []
+    for s in snapshot.rdp.sessions:
+        rtt = max(float(s.get("tcp_rtt_ms") or 0), float(s.get("udp_rtt_ms") or 0))
+        if not rtt and s.get("peer_rtt_ms") is not None:
+            rtt = float(s["peer_rtt_ms"])
+        loss = f"{float(s['loss_pct']):.1f}%" if s.get("loss_pct") is not None else "—"
+        age = int(s.get("age_sec") or 0)
+        rows.append(
+            (
+                str(s.get("peer_name") or s.get("peer_ip") or "?"),
+                "我连对方" if s.get("direction") == "out" else "对方连我",
+                _TRANSPORT_ZH.get(str(s.get("transport")), "未知"),
+                _PATH_ZH.get(str(s.get("peer_path")), "—"),
+                f"{rtt:.0f} 毫秒" if rtt else "—",
+                loss,
+                f"{age // 60} 分钟" if age >= 60 else f"{age} 秒",
+            )
+        )
     return rows
 
 

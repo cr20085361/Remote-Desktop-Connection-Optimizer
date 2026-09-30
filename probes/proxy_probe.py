@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -21,26 +22,46 @@ $obj = [ordered]@{ procs = $procs; proxy = $proxy }
 $obj | ConvertTo-Json -Depth 5 -Compress
 """
 
-_V2RAYN_HINTS = [
-    Path(r"D:\soft\科学上网\v2rayN-windows-64"),
-    Path(r"D:\soft\科学上网\v2rayN-windows-64-desktop_7249\v2rayN-windows-64"),
-]
+_root_cache: str = ""
+
+
+def _common_roots() -> list[Path]:
+    home = Path(os.environ.get("USERPROFILE", ""))
+    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    roots = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "v2rayN",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "v2rayN",
+        Path(r"C:2rayN"),
+    ]
+    if str(local):
+        roots.append(local / "Programs" / "v2rayN")
+    if str(home):
+        roots.append(home / "v2rayN")
+    return roots
 
 
 def _candidate_roots(proc_path: str) -> list[Path]:
+    """v2rayN 目录候选：运行进程 → 设置里的路径 → 上次成功的路径 → 常见安装位置。不做磁盘递归扫描。"""
     found: list[Path] = []
     if proc_path:
         p = Path(proc_path)
         found.append(p.parent if p.is_file() else p)
-    found.extend(_V2RAYN_HINTS)
-    soft = Path(r"D:\soft")
-    if soft.exists():
-        found.extend(p.parent for p in soft.glob("**/v2rayN.exe"))
+    try:
+        from core.settings import load_settings
+
+        configured = str(load_settings().get("v2rayn_path") or "").strip()
+        if configured:
+            found.append(Path(configured))
+    except Exception:
+        pass
+    if _root_cache:
+        found.append(Path(_root_cache))
+    found.extend(_common_roots())
     uniq: list[Path] = []
     seen = set()
     for item in found:
         key = str(item).lower()
-        if key in seen or not item:
+        if key in seen or not str(item):
             continue
         seen.add(key)
         uniq.append(item)
@@ -64,7 +85,9 @@ def _find_v2rayn_root(proc_path: str) -> str:
     if not scored:
         return ""
     scored.sort(reverse=True)
-    return scored[0][1]
+    global _root_cache
+    _root_cache = scored[0][1]
+    return _root_cache
 
 
 def _as_list(value) -> list:

@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from core.config import ASIA_DERP, OVERSEAS_DERP_HINT
+from core.config import (
+    ASIA_DERP,
+    JITTER_ALERT_MS,
+    LOSS_ALERT_PCT,
+    OVERSEAS_DERP_HINT,
+    RDP_LOSS_ALERT_PCT,
+    RDP_RETRANS_ALERT_PCT,
+    RDP_RTT_ALERT_MS,
+)
 from core.models import Finding, Snapshot
 from probes.proxy_probe import same_slash24
+from rules.plain import is_relaying
 
 RuleFn = Callable[[Snapshot], Optional[Finding]]
 
@@ -35,13 +44,14 @@ def r01_proxy_hijack(snap: Snapshot) -> Optional[Finding]:
     if matched_node:
         hijacked = True
         reasons.append(f"netcheck 公网出口 {g4} 与代理节点 {matched_node} 同网段 {_slash24(g4)}")
-    if proxy.tun_up and default_is_tun:
+    # Tun 抢默认路由只是"可能"，一旦规则里已有 tailscale 直连就不再视为劫持，
+    # 否则修好后（Tun 仍开着）会永远报警。
+    if proxy.tun_up and default_is_tun and not proxy.tailscale_direct_in_rules:
         hijacked = True
         reasons.append(
             f"Tun 已启用且默认路由出口为 {snap.route.default_exit_iface}（跃点最优）"
         )
-        if not proxy.tailscale_direct_in_rules:
-            reasons.append("sing-box/v2rayN 规则中未见 tailscaled.exe → direct")
+        reasons.append("sing-box/v2rayN 规则中未见 tailscaled.exe → direct")
     if not hijacked:
         return None
     reasons.append(f"STUN/端点探测地址 {g4}:{snap.netcheck.global_v4_port or '?'}")
@@ -87,10 +97,7 @@ def r02_derp_overseas(snap: Snapshot) -> Optional[Finding]:
 
 
 def r03_peer_on_derp(snap: Snapshot) -> Optional[Finding]:
-    relayed = [
-        p for p in snap.online_peers()
-        if (p.relay and not p.cur_addr) or (p.ping_via.lower().startswith("derp") if p.ping_via else False)
-    ]
+    relayed = [p for p in snap.online_peers() if is_relaying(p)]
     if not relayed:
         return None
     lines = [f"{p.hostname}({p.ip}) relay={p.relay or p.ping_via} rtt={p.ping_rtt_ms}" for p in relayed]
@@ -110,8 +117,7 @@ def r04_direct_but_slow(snap: Snapshot) -> Optional[Finding]:
         rtt = peer.ping_rtt_ms
         if rtt is None:
             continue
-        via_direct = bool(peer.cur_addr) or (peer.ping_via and "derp" not in peer.ping_via.lower())
-        if via_direct and rtt > 120:
+        if not is_relaying(peer) and rtt > 120:
             slow.append(f"{peer.hostname} via {peer.ping_via or peer.cur_addr} RTT={rtt:.0f}ms")
     if not slow:
         return None
@@ -127,6 +133,8 @@ def r04_direct_but_slow(snap: Snapshot) -> Optional[Finding]:
 
 def r05_tun_steals_default(snap: Snapshot) -> Optional[Finding]:
     if not snap.route.default_routes:
+        return None
+    if snap.proxy.tailscale_direct_in_rules:
         return None
     best = snap.route.default_routes[0]
     tun_names = {n.lower() for n in snap.proxy.tun_ifaces}
@@ -189,22 +197,8 @@ def r07_rdp_transport(snap: Snapshot) -> Optional[Finding]:
 
 
 def r08_mtu(snap: Snapshot) -> Optional[Finding]:
-    ts_mtu = None
-    tun_mtu = None
-    for iface in snap.route.ifaces:
-        if iface.is_tailscale:
-            ts_mtu = iface.mtu
-        if iface.is_tun:
-            tun_mtu = iface.mtu
+    ts_mtu = next((i.mtu for i in snap.route.ifaces if i.is_tailscale), None)
     pmtu_low = [s for s in snap.links if s.pmtu and ts_mtu and s.pmtu < ts_mtu]
-    if ts_mtu and tun_mtu and tun_mtu not in (0, None) and abs((tun_mtu or 0) - ts_mtu) > 200:
-        return Finding(
-            id="R08",
-            severity="medium",
-            title="MTU / PMTU 不匹配",
-            evidence=f"Tailscale MTU={ts_mtu}，Tun MTU={tun_mtu}。差异过大会导致分片或黑洞。",
-            fix_ids=["F07"],
-        )
     if pmtu_low:
         ev = "；".join(f"{s.hostname} PMTU={s.pmtu}" for s in pmtu_low)
         return Finding(
@@ -220,14 +214,14 @@ def r08_mtu(snap: Snapshot) -> Optional[Finding]:
 def r09_jitter_loss(snap: Snapshot) -> Optional[Finding]:
     bad = []
     for peer in snap.online_peers():
-        if peer.ping_jitter_ms is not None and peer.ping_jitter_ms > 30:
+        if peer.ping_jitter_ms is not None and peer.ping_jitter_ms > JITTER_ALERT_MS:
             bad.append(f"{peer.hostname} jitter={peer.ping_jitter_ms:.0f}ms")
-        if peer.ping_loss_pct is not None and peer.ping_loss_pct > 1:
+        if peer.ping_loss_pct is not None and peer.ping_loss_pct > LOSS_ALERT_PCT:
             bad.append(f"{peer.hostname} loss={peer.ping_loss_pct:.1f}%")
     for sample in snap.links:
-        if sample.jitter_ms is not None and sample.jitter_ms > 30:
+        if sample.jitter_ms is not None and sample.jitter_ms > JITTER_ALERT_MS:
             bad.append(f"{sample.hostname} ICMP jitter={sample.jitter_ms:.0f}ms")
-        if sample.loss_pct is not None and sample.loss_pct > 1:
+        if sample.loss_pct is not None and sample.loss_pct > LOSS_ALERT_PCT:
             bad.append(f"{sample.hostname} ICMP loss={sample.loss_pct:.1f}%")
     if not bad:
         return None
@@ -261,15 +255,102 @@ def r10_wifi(snap: Snapshot) -> Optional[Finding]:
 
 
 def r11_rdp_profile(snap: Snapshot) -> Optional[Finding]:
-    if not snap.rdp.tcp_sessions:
+    active = snap.rdp.sessions
+    if not active:
         return None
     return Finding(
         id="R11",
         severity="low",
         title="存在活动 RDP 会话，建议使用优化过的 .rdp 配置",
-        evidence=f"TCP 3389 会话 {len(snap.rdp.tcp_sessions)} 条；UDP 端点 {len(snap.rdp.udp_endpoints)} 条。",
+        evidence=f"活动 RDP 会话 {len(active)} 条（出站 {sum(1 for s in active if s.get('direction') == 'out')}）。",
         fix_ids=["F08"],
         hint="降低色深、开启 AVC/硬件编码、关闭壁纸与字体平滑，弱网下更稳。",
+    )
+
+
+def r12_tailscale_down(snap: Snapshot) -> Optional[Finding]:
+    if snap.prefs.want_running is False:
+        return Finding(
+            id="R12",
+            severity="critical",
+            title="Tailscale 已被断开",
+            evidence="tailscale prefs: WantRunning=false（客户端处于 Disconnected 状态）",
+            hint="远程组网没有连上，其他电脑当然找不到这台机器。",
+        )
+    if snap.self_ip or snap.self_peer() is not None:
+        return None
+    detail = next((e for e in snap.errors if "tailscale" in e.lower() or e.startswith("status")), "")
+    return Finding(
+        id="R12",
+        severity="critical",
+        title="没有读到 Tailscale 状态",
+        evidence=detail or "tailscale status 没有返回本机信息（未安装、服务未运行或未登录）",
+        hint="先确认 Tailscale 已安装、已登录并处于连接状态，其余检测才有意义。",
+    )
+
+
+def r13_exit_node(snap: Snapshot) -> Optional[Finding]:
+    node = snap.prefs.exit_node_ip or snap.prefs.exit_node_id
+    if not node:
+        return None
+    return Finding(
+        id="R13",
+        severity="high",
+        title="本机正在使用 Tailscale 出口节点",
+        evidence=f"ExitNode={node} RouteAll={snap.prefs.route_all}",
+        hint="使用出口节点时，本机所有流量（含 UDP 打洞）都会绕到那台机器，远程桌面容易变慢。",
+    )
+
+
+def _session_label(session: dict) -> str:
+    name = session.get("peer_name") or session.get("peer_ip") or "?"
+    way = "连出去" if session.get("direction") == "out" else "被连入"
+    return f"{name}（{way}，已连 {int(session.get('age_sec') or 0)} 秒）"
+
+
+def r14_rdp_tcp_fallback(snap: Snapshot) -> Optional[Finding]:
+    if snap.rdp.client_disable_udp == 1:
+        return None  # 已被策略禁用，R07 会说明
+    tcp_only = [
+        s for s in snap.rdp.sessions
+        if s.get("transport") == "tcp" and int(s.get("age_sec") or 0) >= 20
+    ]
+    if not tcp_only:
+        return None
+    inbound = any(s.get("direction") == "in" for s in tcp_only)
+    return Finding(
+        id="R14",
+        severity="high",
+        title="远程桌面没有用上 UDP，退回了 TCP",
+        evidence="；".join(_session_label(s) for s in tcp_only) + "。仅 TCP 传输。",
+        fix_ids=["F10"] if inbound else [],
+        hint="被连的一侧没放行 UDP 3389（防火墙或路由器）是最常见原因；UDP 被挡后画面在丢包时会明显更卡。",
+    )
+
+
+def r15_rdp_session_quality(snap: Snapshot) -> Optional[Finding]:
+    bad = []
+    for s in snap.rdp.sessions:
+        rtt = max(float(s.get("tcp_rtt_ms") or 0), float(s.get("udp_rtt_ms") or 0))
+        loss = float(s.get("loss_pct") or 0)
+        retrans = float(s.get("retrans_pct") or 0)
+        problems = []
+        if rtt > RDP_RTT_ALERT_MS:
+            problems.append(f"延迟 {rtt:.0f}ms")
+        if loss > RDP_LOSS_ALERT_PCT:
+            problems.append(f"丢包 {loss:.1f}%")
+        if retrans > RDP_RETRANS_ALERT_PCT:
+            problems.append(f"重传 {retrans:.1f}%")
+        if problems:
+            bad.append(f"{_session_label(s)} " + "、".join(problems))
+    if not bad:
+        return None
+    return Finding(
+        id="R15",
+        severity="high",
+        title="正在进行的远程桌面会话质量差",
+        evidence="；".join(bad) + "。（来自远程桌面自身的实时统计）",
+        hint="这是 RDP 自己测到的真实体验；结合上面的绕路 / 丢包问题一起看。",
     )
 
 
@@ -285,4 +366,8 @@ RULES: list[RuleFn] = [
     r09_jitter_loss,
     r10_wifi,
     r11_rdp_profile,
+    r12_tailscale_down,
+    r13_exit_node,
+    r14_rdp_tcp_fallback,
+    r15_rdp_session_quality,
 ]

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime
 from pathlib import Path
 
-from core.config import APP_DATA, ROLLBACK_DIR, TS_CGNAT_OVERRIDE, ensure_app_dirs
+from core.config import APP_DATA, ROLLBACK_DIR, TS_CGNAT_CIDR, TS_CGNAT_OVERRIDE, ensure_app_dirs
 from core.models import Snapshot
 from core.runner import is_admin, run, run_powershell
 from fixes.base import FixAction, FixResult
@@ -15,7 +17,8 @@ from probes.tailscale_probe import find_tailscale
 ensure_app_dirs()
 
 
-def _write_rollback(fix_id: str, body: str) -> str:
+def _write_rollback(fix_id: str, body: str, meta: dict | None = None) -> str:
+    """写回滚脚本。带 meta 时旁边再写一个 .json，程序内撤销优先用它（精确、不动别的改动）。"""
     ROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = ROLLBACK_DIR / f"{fix_id}_{stamp}.ps1"
@@ -24,6 +27,9 @@ def _write_rollback(fix_id: str, body: str) -> str:
         f"# {fix_id} {stamp}\n"
         "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
     )
+    if meta:
+        header += "# 在程序里点「撤销」会精确删除本工具添加的规则；下面是整文件还原的备用方案。\n"
+        path.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     path.write_text(header + body + "\n", encoding="utf-8")
     return str(path)
 
@@ -48,7 +54,11 @@ class F01TailscaleDirect(FixAction):
         result = v2rayn.patch_routing(snapshot.proxy.v2rayn_path, add_process=True, add_cgnat=False)
         rollback = ""
         if result.get("backups"):
-            rollback = _write_rollback("F01", _backup_copy_script(result["backups"]) + "\nWrite-Host '已回滚 v2rayN 配置，请重启 v2rayN'")
+            rollback = _write_rollback(
+                "F01",
+                _backup_copy_script(result["backups"]) + "\nWrite-Host '已回滚 v2rayN 配置，请重启 v2rayN'",
+                {"kind": "v2rayn", "root": snapshot.proxy.v2rayn_path, "kinds": ["process"]},
+            )
         return FixResult(
             ok=bool(result.get("ok")),
             message=str(result.get("message") or ""),
@@ -73,7 +83,7 @@ class F02DisableTun(FixAction):
         )
 
     def precheck(self, snapshot: Snapshot) -> tuple[bool, str]:
-        if not snapshot.proxy.tun_up and not snapshot.proxy.singbox_running:
+        if not snapshot.proxy.tun_up:
             return False, "当前未见 Tun 网卡处于活动状态。"
         return True, "将尝试关闭 v2rayN Tun 开关；失败则给出手动步骤。"
 
@@ -81,19 +91,21 @@ class F02DisableTun(FixAction):
         result = {"ok": False, "message": "未找到 v2rayN"}
         if snapshot.proxy.v2rayn_path:
             result = v2rayn.disable_tun_flag(snapshot.proxy.v2rayn_path)
+        backups = result.get("backups") or []
         rollback = _write_rollback(
             "F02",
-            "Write-Host '请在 v2rayN 主界面重新打开「启用 Tun」以回滚 F02'",
+            (_backup_copy_script(backups) + "\n" if backups else "")
+            + "Write-Host '请在 v2rayN 主界面重新打开「启用 Tun」（配置已还原的话，重启 v2rayN 即可）'",
         )
         manual = (
             "手动步骤：打开 v2rayN → 关闭底部「启用 Tun」→ 路由模式保持「绕过大陆」。"
             "系统代理可保留，RDP/Tailscale 不走系统代理。"
         )
         msg = str(result.get("message") or "")
-        if result.get("manual"):
+        if not result.get("ok"):
             msg = msg + " " + manual
         return FixResult(
-            ok=bool(result.get("ok")) or True,
+            ok=bool(result.get("ok")),
             message=msg or manual,
             rollback_path=rollback,
             changed=bool(result.get("changed")),
@@ -117,7 +129,7 @@ class F03ProxyOverride(FixAction):
         return True, f"当前: {snapshot.proxy.proxy_override or '(空)'}"
 
     def apply(self, snapshot: Snapshot) -> FixResult:
-        current = snapshot.proxy.proxy_override or ""
+        current = _read_proxy_override(snapshot.proxy.proxy_override or "")
         parts = [p for p in current.split(";") if p]
         if TS_CGNAT_OVERRIDE not in parts:
             parts.append(TS_CGNAT_OVERRIDE)
@@ -162,7 +174,16 @@ class F04CgnatDirect(FixAction):
         result = v2rayn.patch_routing(snapshot.proxy.v2rayn_path, add_process=False, add_cgnat=True)
         rollback = ""
         if result.get("backups"):
-            rollback = _write_rollback("F04", _backup_copy_script(result["backups"]))
+            rollback = _write_rollback(
+                "F04",
+                _backup_copy_script(result["backups"]),
+                {
+                    "kind": "v2rayn",
+                    "root": snapshot.proxy.v2rayn_path,
+                    "kinds": ["cgnat"],
+                    "tun_exclude_added": result.get("tun_exclude_added") or [],
+                },
+            )
         return FixResult(
             ok=bool(result.get("ok")),
             message=str(result.get("message") or ""),
@@ -301,17 +322,18 @@ class F08RdpFile(FixAction):
         )
 
     def precheck(self, snapshot: Snapshot) -> tuple[bool, str]:
-        peers = snapshot.online_peers()
+        peers = _windows_peers(snapshot)
         if not peers:
-            return False, "没有在线的 Tailscale 节点。"
+            return False, "没有在线的 Windows 节点。"
         return True, f"将为 {len(peers)} 个节点生成 .rdp。"
 
     def apply(self, snapshot: Snapshot) -> FixResult:
         out_dir = APP_DATA / "rdp"
         out_dir.mkdir(parents=True, exist_ok=True)
         written = []
-        for peer in snapshot.online_peers():
-            path = out_dir / f"{peer.hostname}.rdp"
+        for peer in _windows_peers(snapshot):
+            safe = re.sub(r'[\\/:*?"<>|]', "_", peer.hostname or peer.ip)
+            path = out_dir / f"{safe}.rdp"
             path.write_text(_rdp_body(peer.ip, peer.hostname), encoding="utf-8")
             written.append(str(path))
         rollback = _write_rollback(
@@ -339,12 +361,69 @@ class F09DirectHarden(FixAction):
         exe = find_tailscale()
         result = run([exe, "set", "--port=41641"], timeout=20)
         rollback = _write_rollback("F09", f'& "{exe}" set --port=0')
-        extra = (
-            "本机 netcheck 已显示 UPnP。若路由器管理页可访问，建议把 UDP 41641 映射到这台电脑。"
-        )
+        if "upnp" in (snapshot.netcheck.port_mapping or "").lower():
+            extra = "本机 netcheck 显示路由器支持 UPnP，通常会自动映射；仍不直连时可手动映射 UDP 41641。"
+        else:
+            extra = "若路由器管理页可访问，建议把 UDP 41641 映射到这台电脑。"
         return FixResult(
             result.ok,
             (result.stdout or result.stderr or "已设置端口") + " " + extra,
+            rollback,
+            result.ok,
+        )
+
+
+def _read_proxy_override(fallback: str) -> str:
+    """快照可能已过期（v2rayN 会改写这个值），apply 时重读一次。"""
+    result = run_powershell(
+        "(Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' "
+        "-ErrorAction SilentlyContinue).ProxyOverride",
+        timeout=10,
+    )
+    return result.stdout.strip() if result.ok else fallback
+
+
+def _windows_peers(snapshot: Snapshot) -> list:
+    return [p for p in snapshot.online_peers() if not p.os or p.os.lower() == "windows"]
+
+
+_FW_RULE = "RdpOptimizer RDP UDP 3389"
+
+
+class F10RdpUdpFirewall(FixAction):
+    def __init__(self) -> None:
+        super().__init__(
+            id="F10",
+            title="放行 RDP UDP 3389（仅 Tailscale 网段）",
+            summary="新增防火墙入站规则，让远程桌面能用上 UDP。",
+            risk="只放行 100.64.0.0/10，可删除该规则撤销。",
+        )
+
+    def precheck(self, snapshot: Snapshot) -> tuple[bool, str]:
+        if not is_admin():
+            return False, "需要管理员权限。"
+        inbound_tcp = [
+            s for s in snapshot.rdp.sessions
+            if s.get("direction") == "in" and s.get("transport") == "tcp"
+        ]
+        if not inbound_tcp:
+            return False, "没有发现回退到 TCP 的入站会话（本修复只对被连接的这台电脑有效）。"
+        return True, "将新增入站规则：UDP 3389，来源 100.64.0.0/10。"
+
+    def apply(self, snapshot: Snapshot) -> FixResult:
+        script = (
+            f"$n = '{_FW_RULE}'; "
+            "if (-not (Get-NetFirewallRule -DisplayName $n -ErrorAction SilentlyContinue)) { "
+            "New-NetFirewallRule -DisplayName $n -Direction Inbound -Protocol UDP -LocalPort 3389 "
+            f"-Action Allow -Profile Any -RemoteAddress {TS_CGNAT_CIDR} | Out-Null }}"
+        )
+        result = run_powershell(script, timeout=25)
+        rollback = _write_rollback(
+            "F10", f"Remove-NetFirewallRule -DisplayName '{_FW_RULE}' -ErrorAction SilentlyContinue"
+        )
+        return FixResult(
+            result.ok,
+            "已放行 UDP 3389（仅 Tailscale 网段）。请断开后重新连接远程桌面。" if result.ok else (result.stderr or "写入防火墙规则失败"),
             rollback,
             result.ok,
         )
@@ -410,5 +489,6 @@ ACTIONS: dict[str, FixAction] = {
         F07Mtu(),
         F08RdpFile(),
         F09DirectHarden(),
+        F10RdpUdpFirewall(),
     )
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFormLayout,
@@ -24,7 +25,16 @@ from ai.catalog import (
     models_for,
     provider_id_for,
 )
-from core.settings import get_api_key, load_settings, peer_token, save_settings, set_api_key
+from core.settings import (
+    generate_peer_token,
+    get_api_key,
+    is_valid_peer_token,
+    load_settings,
+    peer_token,
+    save_settings,
+    set_api_key,
+    set_peer_token,
+)
 
 
 class SettingsPage(QWidget):
@@ -51,8 +61,11 @@ class SettingsPage(QWidget):
         self.check_updates = QCheckBox("启动时检查更新（有网才访问 GitHub Release）")
         self.check_updates.setChecked(bool(s.get("check_updates", True)))
         self.btn_check_update = QPushButton("检查更新")
-        self.token = QLineEdit(peer_token())
-        self.token.setReadOnly(True)
+        self._saved_token = peer_token()
+        self.token = QLineEdit(self._saved_token)
+        self.token.setPlaceholderText("两台电脑填同一个令牌，才能互相看到对方状态")
+        self.btn_token_new = QPushButton("生成新令牌")
+        self.btn_token_copy = QPushButton("复制")
 
         self.ai_provider = QComboBox()
         for pid, meta in PROVIDERS.items():
@@ -80,7 +93,11 @@ class SettingsPage(QWidget):
         form.addRow("对端快照端口", self.peer_port)
         form.addRow("", self.peer_enable)
         form.addRow("", self.check_updates)
-        form.addRow("共享令牌", self.token)
+        token_row = QHBoxLayout()
+        token_row.addWidget(self.token, 1)
+        token_row.addWidget(self.btn_token_new)
+        token_row.addWidget(self.btn_token_copy)
+        form.addRow("共享令牌", token_row)
         form.addRow("AI 服务商", self.ai_provider)
         form.addRow("接口地址（已预填）", self.ai_url)
         form.addRow("模型", self.ai_model)
@@ -110,6 +127,8 @@ class SettingsPage(QWidget):
         self.btn_save.clicked.connect(self._save)
         self.btn_test_ai.clicked.connect(self._test_ai)
         self.btn_check_update.clicked.connect(self.check_update_requested.emit)
+        self.btn_token_new.clicked.connect(lambda: self.token.setText(generate_peer_token()))
+        self.btn_token_copy.clicked.connect(self._copy_token)
         self._fill_models(str(s.get("ai_model") or ""))
 
     def _provider(self) -> str:
@@ -147,7 +166,24 @@ class SettingsPage(QWidget):
             "ai_model": str(self.ai_model.currentData() or default_model(self._provider())),
         }
 
+    def _copy_token(self) -> None:
+        QApplication.clipboard().setText(self.token.text().strip())
+        self.btn_token_copy.setText("已复制")
+
+    def _save_token(self) -> bool:
+        value = self.token.text().strip()
+        if value == self._saved_token:
+            return True
+        if not is_valid_peer_token(value):
+            QMessageBox.warning(self, "令牌格式不对", "令牌需为 12–64 位字母、数字、下划线或连字符。")
+            return False
+        set_peer_token(value)
+        self._saved_token = value
+        return True
+
     def _save(self) -> None:
+        if not self._save_token():
+            return
         save_settings(self._payload())
         set_api_key(self.ai_key.text().strip())
         self.btn_save.setText("已保存")

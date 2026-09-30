@@ -19,6 +19,7 @@ _PONG_RE = re.compile(
     re.I,
 )
 _IPV4_PORT_RE = re.compile(r"(?P<ip>\d+\.\d+\.\d+\.\d+):(?P<port>\d+)")
+_ENDPOINT_RE = re.compile(r"(?:\d+\.\d+\.\d+\.\d+|\[[0-9a-fA-F:.]+\]):\d+")
 
 
 def find_tailscale() -> Optional[str]:
@@ -284,33 +285,58 @@ def _parse_netcheck_text(text: str) -> NetcheckState:
     return state
 
 
-def ping_peer(ip: str, count: int = 2) -> dict:
-    result = _ts(["ping", "--c", str(count), ip], timeout=max(8, count * 3))
-    rtts: list[float] = []
-    vias: list[str] = []
-    for line in (result.stdout or "").splitlines():
+_MIN_PING_SAMPLES = 5
+
+
+def _is_derp_via(via: str) -> bool:
+    low = (via or "").strip().lower()
+    return low.startswith("derp") or "derp(" in low
+
+
+def parse_ping_output(text: str) -> list[tuple[str, float]]:
+    """解析 tailscale ping 输出，返回 [(via, rtt_ms), ...]。"""
+    pongs: list[tuple[str, float]] = []
+    for line in (text or "").splitlines():
         match = _PONG_RE.search(line)
         if match:
-            rtts.append(float(match.group("ms")))
-            vias.append(match.group("via").strip())
+            pongs.append((match.group("via").strip(), float(match.group("ms"))))
+    return pongs
+
+
+def summarize_pings(pongs: list[tuple[str, float]], count: int, raw: str = "") -> dict:
+    """汇总样本。
+
+    第一个 pong 常常还在走 DERP（正在打洞），所以只要出现过直连样本，
+    延迟/抖动就只用直连样本算，路径以最后一个 pong 为准。
+    """
+    direct = [ms for via, ms in pongs if not _is_derp_via(via)]
+    rtts = direct or [ms for _via, ms in pongs]
     loss = None
     if count:
-        loss = max(0.0, (count - len(rtts)) / float(count) * 100.0)
+        loss = max(0.0, (count - len(pongs)) / float(count) * 100.0)
     jitter = None
     if len(rtts) >= 2:
         deltas = [abs(rtts[i] - rtts[i - 1]) for i in range(1, len(rtts))]
         jitter = sum(deltas) / len(deltas)
     avg = sum(rtts) / len(rtts) if rtts else None
-    via = vias[0] if vias else (result.stdout or result.stderr or "")[:120]
+    via = pongs[-1][0] if pongs else (raw or "")[:120]
     return {
         "rtt_ms": avg,
         "jitter_ms": jitter,
         "loss_pct": loss,
         "via": via,
         "samples": rtts,
-        "ok": bool(rtts),
-        "raw": result.stdout[-1000:],
+        "ok": bool(pongs),
+        "raw": (raw or "")[-1000:],
     }
+
+
+def ping_peer(ip: str, count: int = 2) -> dict:
+    # 默认 --until-direct：已直连时首个 pong 就退出，会被误算成丢包，所以显式关掉。
+    count = max(int(count), _MIN_PING_SAMPLES)
+    result = _ts(["ping", "--c", str(count), "--until-direct=false", ip], timeout=max(10, count * 3))
+    pongs = parse_ping_output(result.stdout or "")
+    return summarize_pings(pongs, count, result.stdout or result.stderr or "")
 
 
 def collect_prefs() -> TailscalePrefs:
@@ -334,6 +360,10 @@ def apply_ping_stats(peer: PeerState, stats: dict) -> None:
     peer.ping_via = str(stats.get("via") or "")
     peer.ping_loss_pct = stats.get("loss_pct")
     peer.ping_jitter_ms = stats.get("jitter_ms")
+    # status 是 ping 之前读的：空闲对端会显示成 relay。以 ping 实测路径对账。
+    if peer.ping_rtt_ms is not None and _ENDPOINT_RE.search(peer.ping_via) and not _is_derp_via(peer.ping_via):
+        peer.cur_addr = peer.cur_addr or peer.ping_via
+        peer.relay = ""
 
 
 def ping_online_peers(

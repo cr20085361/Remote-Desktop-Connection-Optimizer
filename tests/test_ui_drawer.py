@@ -45,14 +45,14 @@ class DrawerUiTest(unittest.TestCase):
 
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_tech_page_has_four_tabs_and_no_chat(self) -> None:
+    def test_tech_page_tabs_and_no_chat(self) -> None:
         from ui.chat_panel import ChatPanel
         from ui.tech_page import TechPage
 
         page = TechPage()
-        self.assertEqual(page.tabs.count(), 4)
+        self.assertEqual(page.tabs.count(), 5)
         names = [page.tabs.tabText(i) for i in range(page.tabs.count())]
-        self.assertEqual(names, ["关系图", "延迟曲线", "问题记录", "撤销"])
+        self.assertEqual(names, ["关系图", "延迟曲线", "远程桌面", "问题记录", "撤销"])
         self.assertEqual(page.findChildren(ChatPanel), [])
 
     def test_drawer_open_and_strip_widths(self) -> None:

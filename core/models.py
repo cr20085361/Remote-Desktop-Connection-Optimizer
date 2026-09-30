@@ -158,6 +158,9 @@ class RdpState:
     client_disable_udp: Optional[int] = None
     tcp_sessions: list[dict[str, Any]] = field(default_factory=list)
     udp_endpoints: list[dict[str, Any]] = field(default_factory=list)
+    # 活动会话：direction(out/in)、peer_ip、age_sec、transport(udp/tcp/unknown)，
+    # 主机侧另有 tcp_rtt_ms / udp_rtt_ms / loss_pct / retrans_pct；collector 会补 peer_name / peer_path。
+    sessions: list[dict[str, Any]] = field(default_factory=list)
     recent_events: list[str] = field(default_factory=list)
     error: str = ""
 

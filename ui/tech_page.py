@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -14,6 +15,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -22,8 +25,8 @@ from PySide6.QtWidgets import (
 
 from core.config import ROLLBACK_DIR
 from core.models import Snapshot
-from core.runner import run_powershell
-from rules.plain import issue_cards
+from fixes.engine import run_rollback
+from rules.plain import SESSION_HEADERS, issue_cards, session_rows
 from ui.charts import RttChart
 from ui.theme import MUTED, PAGE_MARGIN, SEVERITY_COLOR
 from ui.topology import TopologyView
@@ -86,6 +89,22 @@ class TechPage(QWidget):
         evidence.setStretchFactor(0, 2)
         evidence.setStretchFactor(1, 3)
 
+        self.sessions = QTableWidget(0, len(SESSION_HEADERS))
+        self.sessions.setHorizontalHeaderLabels(SESSION_HEADERS)
+        self.sessions.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.sessions.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.sessions.verticalHeader().setVisible(False)
+        self.sessions.horizontalHeader().setStretchLastSection(True)
+        self.sessions_empty = QLabel("现在没有正在进行的远程桌面连接。连上后这里会显示走的是 UDP 还是 TCP、当前延迟和丢包。")
+        self.sessions_empty.setObjectName("muted")
+        self.sessions_empty.setWordWrap(True)
+        self.sessions_empty.setAlignment(Qt.AlignCenter)
+        sess_inner = QWidget()
+        sess_l = QVBoxLayout(sess_inner)
+        sess_l.setContentsMargins(12, 12, 12, 12)
+        sess_l.addWidget(self.sessions_empty)
+        sess_l.addWidget(self.sessions, 1)
+
         self.rollbacks = QListWidget()
         self.rollback_empty = QLabel("还没有可撤销的修改。")
         self.rollback_empty.setObjectName("muted")
@@ -106,6 +125,7 @@ class TechPage(QWidget):
         self.tabs = QTabWidget()
         self.tabs.addTab(topo_card, "关系图")
         self.tabs.addTab(self.chart, "延迟曲线")
+        self.tabs.addTab(sess_inner, "远程桌面")
         self.tabs.addTab(evidence, "问题记录")
         self.tabs.addTab(rb_inner, "撤销")
 
@@ -127,6 +147,13 @@ class TechPage(QWidget):
         self.topo.hide_offline = self.hide_offline.isChecked()
         self.topo.render_snapshot(snap)
         self.chart.update_snapshot(snap, hide_when_empty=False)
+        rows = session_rows(snap)
+        self.sessions.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c, text in enumerate(row):
+                self.sessions.setItem(r, c, QTableWidgetItem(text))
+        self.sessions.setVisible(bool(rows))
+        self.sessions_empty.setVisible(not rows)
         self.tree.clear()
         for card in issue_cards(snap):
             item = QTreeWidgetItem([card.title, card.severity_label])
@@ -184,6 +211,6 @@ class TechPage(QWidget):
         path = item.text()
         if QMessageBox.question(self, "撤销", f"要撤销这份修改吗？\n{path}") != QMessageBox.Yes:
             return
-        result = run_powershell(f'& "{path}"', timeout=40)
-        QMessageBox.information(self, "撤销结果", result.stdout or result.stderr or "已执行。")
+        _ok, message = run_rollback(path)
+        QMessageBox.information(self, "撤销结果", message)
         self._load_rollbacks()

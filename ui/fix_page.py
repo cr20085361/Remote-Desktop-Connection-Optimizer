@@ -19,9 +19,8 @@ from PySide6.QtWidgets import (
 
 from core.config import ROLLBACK_DIR
 from core.models import Snapshot
-from core.runner import run_powershell
 from fixes.catalog import ACTIONS
-from fixes.engine import run_fix
+from fixes.engine import run_fix, run_rollback
 
 
 class FixPage(QWidget):
@@ -118,5 +117,5 @@ class FixPage(QWidget):
         path = item.text()
         if QMessageBox.question(self, "回滚", f"运行 {path} ?") != QMessageBox.Yes:
             return
-        result = run_powershell(f'& "{path}"', timeout=40)
-        self.log.appendPlainText(result.stdout or result.stderr or "已执行回滚")
+        _ok, message = run_rollback(path)
+        self.log.appendPlainText(message)

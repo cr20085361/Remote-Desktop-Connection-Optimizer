@@ -5,8 +5,8 @@
     "recorded_at": "2026-09-17T23:15:09+08:00",
     "version_source": null
   },
-  "current_version": "v1.5.0",
-  "completed_iterations": 6,
+  "current_version": "v1.6.0",
+  "completed_iterations": 7,
   "history": [
     {
       "id": "c8877cf0-f7bc-4cb8-830f-e8587e0eb47d",
@@ -61,6 +61,15 @@
       "summary": "离线安装包与 GitHub 确认后更新；窗口标题与安装名称带完整版本号",
       "verification": "python -m unittest discover tests -v",
       "recorded_at": "2026-09-18T01:01:03+08:00"
+    },
+    {
+      "id": "fbd844f5-a1ae-4589-a289-15383ab7ccdc",
+      "from_version": "v1.5.0",
+      "to_version": "v1.6.0",
+      "level": "minor",
+      "summary": "修复修好后仍报警的误判并新增无法判断状态；F01/F04 精确撤销；双端共享令牌可配置；评分按根因去重；新增 RDP 实时质量（UDP/TCP 通道、主机侧延迟丢包）与规则 R12-R15、修复 F10",
+      "verification": "python -m unittest discover tests -v; python main.py --cli diagnose",
+      "recorded_at": "2026-09-30T21:02:09+08:00"
     }
   ]
 }

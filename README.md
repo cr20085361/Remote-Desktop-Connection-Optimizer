@@ -2,7 +2,7 @@
 
 Windows 桌面工具：实时看清 Tailscale 是否被 v2rayN Tun 劫持、节点是直连还是走海外 DERP，并给出可确认执行、可回滚的修复动作。
 
-当前版本：`1.5.0`
+当前版本：`1.6.0`
 
 开源仓库：<https://github.com/cr20085361/Remote-Desktop-Connection-Optimizer>
 
@@ -12,13 +12,13 @@ Windows 桌面工具：实时看清 Tailscale 是否被 v2rayN Tun 劫持、节�
 flowchart TB
   subgraph uiLayer ["界面"]
     verdict["体检"]
-    tech["技术细节四标签"]
+    tech["技术细节五标签"]
     settings["设置"]
     drawer["右侧助理"]
   end
   subgraph localLayer ["本地判定"]
     collect["两阶段采集"]
-    rules["规则 R01-R11"]
+    rules["规则 R01-R15"]
     fixes["修复 F01-F09"]
   end
   subgraph extraLayer ["可选能力"]
@@ -58,6 +58,7 @@ timeline
   v1.3.0 : "技术细节对话与图标"
   v1.4.0 : "全局助理抽屉与子标签"
   v1.5.0 : "离线安装包与确认后更新"
+  v1.6.0 : "修好转绿、精确撤销与 RDP 实时质量"
 ```
 
 ## 离线安装包
@@ -82,7 +83,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
 补发 GitHub Release（已登录 `gh` 时）：
 
 ```powershell
-gh release create v1.5.0 dist\installer\RdpOptimizer-Setup-1.5.0.exe dist\latest.json --title "远程桌面连接优化器 1.5.0" --notes "离线安装包与确认后自动更新。"
+gh release create v1.6.0 dist\installer\RdpOptimizer-Setup-1.6.0.exe dist\latest.json --title "远程桌面连接优化器 1.6.0" --notes "见 Release 说明。"
 ```
 
 ## 它解决什么
@@ -93,7 +94,7 @@ gh release create v1.5.0 dist\installer\RdpOptimizer-Setup-1.5.0.exe dist\latest
 2. 最近 DERP 被判定为洛杉矶等地，延迟 600ms+，直连失败后 RDP 几乎不可用。
 3. 系统代理绕过列表没有 `100.*`，或 RDP 被关掉 UDP。
 
-本工具用本地规则 R01–R11 判定上述问题，不依赖云端模型。DeepSeek / Qwen 只是可选顾问。
+本工具用本地规则 R01–R15 判定上述问题，不依赖云端模型。DeepSeek / Qwen 只是可选顾问。
 
 ## 环境
 
@@ -121,9 +122,9 @@ python main.py --cli fixes
 打开后是一份「体检报告」，不需要懂网络术语：
 
 - **体检**：健康评分、一句话结论、白话问题卡片。每张卡片说明「发生了什么 / 对你的影响 / 下一步」，并带「修复这个」和「问 AI」。
-- **技术细节**：四个子标签一次只看一块——关系图、延迟曲线、问题记录、撤销。问题记录选中一条后可「问 AI」。
+- **技术细节**：五个子标签一次只看一块——关系图、延迟曲线、远程桌面（当前会话走 UDP 还是 TCP、延迟、丢包）、问题记录、撤销。问题记录选中一条后可「问 AI」。
 - **右侧助理**：全局抽屉，体检和技术细节都能用，可收成竖条。对话按 Markdown 显示，长回复能滚完。
-- **设置**：检测周期、v2rayN 路径、对端快照端口/令牌、启动时检查更新。DeepSeek 接口地址已按官网预填，只需粘贴 API Key 并选择 `deepseek-flash` 或 `deepseek-v4-pro`。
+- **设置**：检测周期、v2rayN 路径、对端快照端口/共享令牌（可粘贴对端令牌或生成新令牌）、启动时检查更新。DeepSeek 接口地址已按官网预填，只需粘贴 API Key 并选择 `deepseek-flash` 或 `deepseek-v4-pro`。
 
 点「修复这个」会先说明会改什么、能否撤销。若需要你去 v2rayN 重启 Tun，顶部会出现一条提示，做完点「我已完成，重新检测」，会弹出处理前后的对比。
 
@@ -149,7 +150,7 @@ python main.py --cli fixes
 
 `http://<100.x.x.x>:18765/snapshot?token=<共享令牌>`
 
-把同一套程序拷到家里/办公室电脑并使用相同令牌后，主控机拓扑图能显示对端出口 IP、DERP、Tun 状态，从而判断卡顿发生在哪一侧。
+把同一套程序装到家里/办公室电脑，并在两边的「设置 → 共享令牌」填同一个值（一边点「生成新令牌」并复制，另一边粘贴）后，主控机拓扑图能显示对端出口 IP、DERP、Tun 状态，从而判断卡顿发生在哪一侧。
 
 ## 本地规则与修复
 
@@ -166,6 +167,10 @@ python main.py --cli fixes
 | R09 | 抖动或丢包 | F01 / F08 |
 | R10 | 当前走 Wi-Fi | F08 |
 | R11 | 活动 RDP 建议用优化配置 | F08 |
+| R12 | Tailscale 未运行 / 未登录 / 已断开 | 手动 |
+| R13 | 本机正在使用 Tailscale 出口节点 | 手动 |
+| R14 | 远程桌面只走 TCP、没用上 UDP | F10（被连一侧）/ 手动 |
+| R15 | 当前会话实测延迟/丢包/重传偏高 | 手动 |
 
 **F01（优先）**：在 v2rayN 路由最前面插入进程直连 `tailscaled.exe,tailscale.exe`。规则必须单独填进程名，且放在规则集 / final 之前。改完后请在 v2rayN 里重启 Tun。
 

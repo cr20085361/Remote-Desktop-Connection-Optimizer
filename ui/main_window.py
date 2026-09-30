@@ -123,6 +123,7 @@ class MainWindow(QMainWindow):
         self._update_check: UpdateCheckThread | None = None
         self._update_download: UpdateDownloadThread | None = None
         self._manual_update_check = False
+        self._manual_collect = False
         self._spin_i = 0
         self._prog: tuple[int, int, str] = (0, 8, "即将开始检测")
         self._detect_t0 = time.monotonic()
@@ -189,14 +190,15 @@ class MainWindow(QMainWindow):
         self.setStatusBar(bar)
         bar.showMessage("正在准备第一次检测")
 
-        self.btn_collect.clicked.connect(self.start_collect)
+        self.btn_collect.clicked.connect(lambda: self.start_collect(manual=True))
         self.drawer.settings_requested.connect(self._goto_settings)
         self.page_home.ask_ai.connect(self._ask_ai)
         self.page_tech.ask_ai.connect(self._ask_ai)
         self.page_set.saved.connect(self.drawer.chat.refresh_status)
+        self.page_set.saved.connect(self._restart_timer)
         self.page_set.check_update_requested.connect(lambda: self._check_updates(manual=True))
         self.page_home.banner_requested.connect(self._on_banner)
-        self.page_home.retest_requested.connect(self.start_collect)
+        self.page_home.retest_requested.connect(lambda: self.start_collect(manual=True))
         self.banner.retest_clicked.connect(self._on_banner_action)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.start_collect)
@@ -208,9 +210,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(400, self.start_collect)
         QTimer.singleShot(2000, lambda: self._check_updates(manual=False))
 
-    def start_collect(self) -> None:
+    def start_collect(self, manual: bool = False) -> None:
         if self._thread and self._thread.isRunning():
             return
+        self._manual_collect = manual
         self._busy = True
         self._detect_t0 = time.monotonic()
         self._prog = (0, 8, "正在启动检测")
@@ -278,8 +281,40 @@ class MainWindow(QMainWindow):
             self.timer.start(max(interval, 15000))
 
     def _on_fail(self, msg: str) -> None:
-        self.statusBar().showMessage("检测失败")
-        QMessageBox.warning(self, "检测失败", msg)
+        self.statusBar().showMessage(f"检测失败：{msg}")
+        # 自动刷新失败只写状态栏，别每分钟弹一次模态框
+        if self._manual_collect:
+            QMessageBox.warning(self, "检测失败", msg)
+
+    def _restart_timer(self) -> None:
+        """设置页保存后让新的采集周期立即生效（等待复测时保持暂停）。"""
+        if self._awaiting_retest:
+            return
+        interval = int(load_settings().get("interval_sec") or 60) * 1000
+        self.timer.start(max(interval, 15000))
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        """退出前收拾后台线程，避免 'QThread: Destroyed while thread is still running'。"""
+        self.timer.stop()
+        self.spin_timer.stop()
+        threads = [self._thread, self._update_check, self._update_download]
+        chat_thread = getattr(getattr(self.drawer, "chat", None), "_thread", None)
+        threads.append(chat_thread)
+        for thread in threads:
+            if thread is None or not thread.isRunning():
+                continue
+            thread.blockSignals(True)
+            thread.requestInterruption()
+            if not thread.wait(3000):
+                thread.terminate()
+                thread.wait(500)
+        try:
+            from peer.server import stop_server
+
+            stop_server()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _on_banner(self, post_action: str, before: Snapshot) -> None:
         self._before = before
@@ -293,7 +328,7 @@ class MainWindow(QMainWindow):
         if self._banner_kind == "update":
             self._start_update_download()
             return
-        self.start_collect()
+        self.start_collect(manual=True)
 
     def _check_updates(self, *, manual: bool) -> None:
         if self._update_check and self._update_check.isRunning():

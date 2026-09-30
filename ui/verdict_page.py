@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -17,14 +18,14 @@ from PySide6.QtWidgets import (
 )
 
 from core.models import Snapshot
-from core.runner import run_powershell
+from fixes.engine import run_rollback
 from fixes.catalog import ACTIONS
-from fixes.engine import run_fix
 from rules.plain import FIX_COPY, IssueCard, health_score, issue_cards, summary_line, verdict
 from ui.cards import IssueCardWidget, ScoreRing
 from ui.charts import RttChart
 from ui.theme import CARD_GAP, PAGE_MARGIN
 from ui.topology import TopologyView
+from ui.worker import FixThread
 
 
 class Fold(QWidget):
@@ -62,6 +63,7 @@ class VerdictPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._snap: Snapshot | None = None
+        self._fix_thread: FixThread | None = None
         self._detecting = True
         self.ring = ScoreRing()
         self.verdict_label = QLabel("正在检测这台电脑的远程桌面通路…")
@@ -278,7 +280,16 @@ class VerdictPage(QWidget):
         )
         if QMessageBox.question(self, "确认修改", text) != QMessageBox.Yes:
             return
-        result = run_fix(fix_id, self._snap, confirmed=True)
+        if self._fix_thread and self._fix_thread.isRunning():
+            return
+        QGuiApplication.setOverrideCursor(Qt.BusyCursor)
+        self._fix_thread = FixThread(fix_id, self._snap, self)
+        self._fix_thread.done.connect(lambda result: self._on_fix_done(fix_id, result))
+        self._fix_thread.start()
+
+    def _on_fix_done(self, fix_id: str, result) -> None:
+        QGuiApplication.restoreOverrideCursor()
+        copy = FIX_COPY.get(fix_id)
         box = QMessageBox(self)
         box.setWindowTitle("处理结果")
         if result.ok:
@@ -291,8 +302,8 @@ class VerdictPage(QWidget):
         box.addButton("知道了", QMessageBox.AcceptRole)
         box.exec()
         if undo is not None and box.clickedButton() == undo:
-            rb = run_powershell(f'& "{result.rollback_path}"', timeout=40)
-            QMessageBox.information(self, "已撤销", rb.stdout or rb.stderr or "已执行撤销脚本。")
+            _ok, message = run_rollback(result.rollback_path)
+            QMessageBox.information(self, "已撤销" if _ok else "撤销没有完全成功", message)
             return
         post = (copy.post_action if copy else "") or ""
         if result.ok:
